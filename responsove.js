@@ -1,229 +1,220 @@
-import  axios  from "axios";
+import axios from "axios";
 import { launch } from "puppeteer";
 import lighthouse from "lighthouse";
-import { launch as _launch } from "chrome-launcher";
+import { launch as chromeLauncher } from "chrome-launcher";
 import cheerio from "cheerio";
-import fs from 'fs';
-import path from 'path';
-import  url  from "url";
+import url from "url";
 
-async function checkResponse(baseUrl){
-    try{
-        const start = Date.now()
-        const response = axios.get(baseUrl);
-        const end = Date.now()
-        const responseTime = end - start;
-        console.log(`Status Code: ${response.status}`);
-        console.log(`Response Time: ${responseTime}ms`);
-        return {response, responseTime}
-    }catch(err){
-        return err
+class WebpageChecker {
+  constructor(baseUrl) {
+    this.baseUrl = baseUrl;
+    this.opts = {
+      chromeFlags: ['--headless'],
+      onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
+    };
+  }
+
+  async checkResponse() {
+    try {
+      const start = Date.now();
+      const response = await axios.get(this.baseUrl);
+      const end = Date.now();
+      const responseTime = end - start;
+      console.log(`Status Code: ${response.status}`);
+      console.log(`Response Time: ${responseTime}ms`);
+      return { response, responseTime };
+    } catch (err) {
+      console.error(`Error fetching URL ${this.baseUrl}:`, err.message);
+      return null;
     }
-}
+  }
 
+  async launchChromeAndRunLightHouse() {
+    const chrome = await chromeLauncher({ chromeFlags: this.opts.chromeFlags });
+    this.opts.port = chrome.port;
 
-async function launchChromeAndRunLightHouse(baseUrl,opts,config = null){
-    const chrome = await _launch({chromeFlags:opts.chromeFlags});
-    opts.port = chrome.port;
-
-    const result = await lighthouse(baseUrl,opts,config);
+    const result = await lighthouse(this.baseUrl, this.opts, null);
     await chrome.kill();
 
-    return result
-}
+    return result;
+  }
 
-async function checkViewport(page, width, height) {
+  async checkViewport(page, width, height) {
     await page.setViewport({ width, height });
     await page.reload();
     const viewportScreenshot = `screenshot-${width}x${height}.png`;
     await page.screenshot({ path: viewportScreenshot });
     console.log(`Screenshot taken: ${viewportScreenshot}`);
-}
+  }
 
-async function checkResponsiveViewports(page) {
+  async checkResponsiveViewports(page) {
     const viewports = [
-        { width: 1920, height: 1080 }, // Desktop
-        { width: 768, height: 1024 },  // Tablet
-        { width: 375, height: 812 }    // Mobile
+      { width: 1920, height: 1080 }, // Desktop
+      { width: 768, height: 1024 },  // Tablet
+      { width: 375, height: 812 },   // Mobile
     ];
 
     for (const viewport of viewports) {
-        await checkViewport(page, viewport.width, viewport.height);
+      await this.checkViewport(page, viewport.width, viewport.height);
     }
-}
+  }
 
-const opts = {
-    chromeFlags: ['--headless'],
-    onlyCategories: ['performance', 'accessibility', 'best-practices', 'seo'],
-};
-
-async function checkCanonical(baseUrl) {
+  async checkCanonical() {
     try {
-        // Fetch the HTML content of the webpage
-        const { data } = await axios.get(baseUrl);
-        
-        // Load the HTML content using cheerio
-        const $ = cheerio.load(data);
-        
-        // Find the canonical link element
-        const canonicalLink = $('link[rel="canonical"]').attr('href');
-        
-        if (canonicalLink) {
-            // Check if the canonical link is correctly pointing to the intended baseUrl
-            const isCanonical = new baseUrl(canonicalLink, baseUrl).href === new baseUrl(baseUrl).href;
-            
-            console.log(`Canonical baseUrl found: ${canonicalLink}`);
-            console.log(`Is the canonical baseUrl correct? ${isCanonical}`);
-        } else {
-            console.log('No canonical baseUrl found.');
-        }
+      const { data } = await axios.get(this.baseUrl);
+      const $ = cheerio.load(data);
+
+      const canonicalLink = $('link[rel="canonical"]').attr('href');
+      if (canonicalLink) {
+        const isCanonical = new URL(canonicalLink, this.baseUrl).href === new URL(this.baseUrl).href;
+        console.log(`Canonical URL found: ${canonicalLink}`);
+        console.log(`Is the canonical URL correct? ${isCanonical}`);
+      } else {
+        console.log('No canonical URL found.');
+      }
     } catch (error) {
-        console.error(`Error fetching the baseUrl: ${error.message}`);
+      console.error(`Error fetching the URL: ${error.message}`);
     }
-}
+  }
 
-async function checkSchemaMarkup(baseUrl) {
+  async checkSchemaMarkup() {
     try {
-      // Fetch the webpage content
-      const response = await axios.get(baseUrl);
+      const response = await axios.get(this.baseUrl);
       const html = response.data;
-  
-      // Load the HTML into cheerio
       const $ = cheerio.load(html);
-  
-      // Check for JSON-LD schema markup
-      const jsonLdScripts = $('script[type="application/ld+json"]');
-      if (jsonLdScripts.length > 0) {
-        console.log('JSON-LD schema markup found.');
-        jsonLdScripts.each((i, elem) => {
-        //   console.log($(elem).html());
-        });
-      } else {
-        console.log('No JSON-LD schema markup found.');
-      }
-  
-      // Check for microdata schema markup
-      const microdataItems = $('[itemscope]');
-      if (microdataItems.length > 0) {
-        console.log('Microdata schema markup found.');
-        microdataItems.each((i, elem) => {
-        //   console.log($.html(elem));
-        });
-      } else {
-        console.log('No microdata schema markup found.');
-      }
-  
-      // Check for RDFa schema markup
-      const rdfaItems = $('[typeof]');
-      if (rdfaItems.length > 0) {
-        console.log('RDFa schema markup found.');
-        rdfaItems.each((i, elem) => {
-        //   console.log($.html(elem));
-        });
-      } else {
-        console.log('No RDFa schema markup found.');
-      }
-  
+
+      this.checkMarkup($, 'JSON-LD', 'script[type="application/ld+json"]');
+      this.checkMarkup($, 'Microdata', '[itemscope]');
+      this.checkMarkup($, 'RDFa', '[typeof]');
     } catch (error) {
       console.error('Error fetching the webpage:', error);
     }
   }
 
-
-async function checkForSitemap(baseUrl) {
-    try {
-        const response = await axios.get(baseUrl);
-        const $ = cheerio.load(response.data);
-        const sitemapLink = $('a[href*="sitemap.xml"]').attr('href');
-        
-        if (sitemapLink) {
-            console.log(`Sitemap found: ${sitemapLink}`);
-        } else {
-            console.log('No sitemap found.');
-        }
-    } catch (error) {
-        console.error(`Error fetching baseUrl: ${error.message}`);
+  checkMarkup($, type, selector) {
+    const elements = $(selector);
+    if (elements.length > 0) {
+      console.log(`${type} schema markup found.`);
+    } else {
+      console.log(`No ${type} schema markup found.`);
     }
-}
-
-async function isLinkBroken(link) {
-    try {
-        const response = await axios.head(link, { maxRedirects: 5 });
-        // Check if status code indicates a broken link
-        if (response.status >= 400) {
-          return true;
-        }
-        return false;
-      } catch (error) {
-        // Retry with a GET request in case HEAD request is not allowed
-        try {
-          const response = await axios.get(link, { maxRedirects: 5 });
-          if (response.status >= 400) {
-            return true;
-          }
-          return false;
-        } catch (error) {
-          return true;
-        }
-      }
-}
-
-async function findBrokenLinks(basebaseUrl) {
-    try {
-        const response = await axios.get(baseUrl);
-        const $ = cheerio.load(response.data);
-    
-        const links = $('a[href]')
-          .map((i, link) => $(link).attr('href'))
-          .get();
-    
-        const brokenLinks = [];
-        for (const link of links) {
-          const fullUrl = url.resolve(baseUrl, link);
-          const broken = await isLinkBroken(fullUrl);
-          if (broken) {
-            brokenLinks.push(fullUrl);
-          }
-        }
-    
-        return brokenLinks;
-      } catch (error) {
-        console.error(`Error fetching the webpage: ${error.message}`);
-        return [];
-      }
   }
 
-async function searchBrokenLinks(baseUrl){
-    await findBrokenLinks(baseUrl).then(brokenLinks => {
-        if (brokenLinks.length > 0) {
-          console.log(`Broken links found on ${baseUrl}:`);
-          brokenLinks.forEach(link => console.log(link));
-        } else {
-          console.log(`No broken links found on ${baseUrl}.`);
-        }
-      });
-}
+  async checkForSitemap() {
+    try {
+      const response = await axios.get(this.baseUrl);
+      const $ = cheerio.load(response.data);
+      const sitemapLink = $('a[href*="sitemap.xml"]').attr('href');
 
-async function main(baseUrl) {
-    await checkResponse(baseUrl);
+      if (sitemapLink) {
+        console.log(`Sitemap found: ${sitemapLink}`);
+      } else {
+        console.log('No sitemap found.');
+      }
+    } catch (error) {
+      console.error(`Error fetching URL: ${error.message}`);
+    }
+  }
+
+  async isLinkBroken(link) {
+    try {
+      const response = await axios.head(link, { maxRedirects: 5 });
+      return response.status >= 400;
+    } catch (error) {
+      try {
+        const response = await axios.get(link, { maxRedirects: 5 });
+        return response.status >= 400;
+      } catch (error) {
+        return true;
+      }
+    }
+  }
+
+  async findBrokenLinks() {
+    try {
+      const response = await axios.get(this.baseUrl);
+      const $ = cheerio.load(response.data);
+
+      const links = $('a[href]').map((i, link) => $(link).attr('href')).get();
+      const brokenLinks = [];
+
+      for (const link of links) {
+        const fullUrl = url.resolve(this.baseUrl, link);
+        const broken = await this.isLinkBroken(fullUrl);
+        if (broken) {
+          brokenLinks.push(fullUrl);
+        }
+      }
+
+      return brokenLinks;
+    } catch (error) {
+      console.error(`Error fetching the webpage: ${error.message}`);
+      return [];
+    }
+  }
+
+  async searchBrokenLinks() {
+    const brokenLinks = await this.findBrokenLinks();
+    if (brokenLinks.length > 0) {
+      console.log(`Broken links found on ${this.baseUrl}:`);
+      brokenLinks.forEach(link => console.log(link));
+    } else {
+      console.log(`No broken links found on ${this.baseUrl}.`);
+    }
+  }
+
+  async getAmpUrl() {
+    try {
+      const response = await axios.get(this.baseUrl);
+      const $ = cheerio.load(response.data);
+      const ampLink = $('link[rel="amphtml"]').attr('href');
+
+      if (ampLink) {
+        const ampUrl = new URL(ampLink, this.baseUrl).href;
+        return { originalUrl: this.baseUrl, ampUrl };
+      } else {
+        return { originalUrl: this.baseUrl, ampUrl: null };
+      }
+    } catch (error) {
+      console.error(`Error fetching URL ${this.baseUrl}:`, error.message);
+      return { originalUrl: this.baseUrl, ampUrl: null };
+    }
+  }
+
+  async checkAmpUrl() {
+    const result = await this.getAmpUrl();
+    console.log(`Original URL: ${result.originalUrl}`);
+    if (result.ampUrl) {
+      console.log(`AMP URL: ${result.ampUrl}`);
+    } else {
+      console.log('No AMP URL found.');
+    }
+  }
+
+  async main() {
+    await this.checkResponse();
+    
     const browser = await launch();
     const page = await browser.newPage();
-    await page.goto(baseUrl);
-    await checkResponsiveViewports(page);
+    await page.goto(this.baseUrl);
+    await this.checkResponsiveViewports(page);
     await browser.close();
 
-    // Run Lighthouse for detailed responsiveness audit
-    const results = await launchChromeAndRunLightHouse(baseUrl, opts);
+    const results = await this.launchChromeAndRunLightHouse();
     const { categories } = results.lhr;
     console.log('Lighthouse audit results:');
     for (const category in categories) {
-        console.log(`${categories[category].title}: ${categories[category].score * 100}`);
+      console.log(`${categories[category].title}: ${categories[category].score * 100}`);
     }
-    await checkCanonical(baseUrl)
-    await checkForSitemap(baseUrl)
-    await checkSchemaMarkup(baseUrl)
-    await searchBrokenLinks(baseUrl)
+
+    await this.checkCanonical();
+    await this.checkForSitemap();
+    await this.checkSchemaMarkup();
+    await this.searchBrokenLinks();
+    await this.checkAmpUrl();
+  }
 }
 
-const baseUrl = 'https://www.carwale.com/mercedes-benz-cars/s-class/s-350d/'; // Replace with the baseUrl you want to check
-main(baseUrl);
+const baseUrl = 'https://www.carwale.com/mercedes-benz-cars/s-class/s-350d/';
+const checker = new WebpageChecker(baseUrl);
+checker.main();
